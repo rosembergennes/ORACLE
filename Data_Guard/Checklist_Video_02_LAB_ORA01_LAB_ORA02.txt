@@ -1,0 +1,382 @@
+CHECKLIST — ORACLE DATA GUARD — LAB-ORA01 E LAB-ORA02 Projeto: DBA na
+Prática Ambiente: Oracle Linux 9.8 + Oracle AI Database 26ai
+
+OBJETIVO Consolidar os passos e comandos executados na preparação do
+LAB-ORA01 e na clonagem/configuração do LAB-ORA02.
+
+====================================================================== 1.
+ARQUITETURA
+======================================================================
+
+LAB-ORA01 IP: 192.168.1.131 Função futura: PRIMARY DB_UNIQUE_NAME
+futuro: DBLABPRD
+
+LAB-ORA02 IP: 192.168.1.132 Função futura: PHYSICAL STANDBY
+DB_UNIQUE_NAME futuro: DBLABSTB
+
+Gateway: 192.168.1.254 DNS: 8.8.8.8 / 1.1.1.1 Listener: TCP/1521 DB_NAME
+futuro: DBLAB SERVICE_NAME futuro da aplicação: DBLAB_APP
+
+IMPORTANTE: nesta etapa o banco DBLAB ainda NÃO foi criado.
+
+======================================================================
+2. LAB-ORA01 — IDENTIDADE E REDE
+======================================================================
+
+[ ] Alterar hostname:
+
+hostnamectl set-hostname LAB-ORA01 hostname
+
+[ ] Configurar rede:
+
+nmcli connection modify eth0
+ipv4.method manual
+ipv4.addresses 192.168.1.131/24
+ipv4.gateway 192.168.1.254
+ipv4.dns “8.8.8.8 1.1.1.1”
+
+nmcli connection up eth0
+
+[ ] Validar rota:
+
+ip route
+
+Esperado: default via 192.168.1.254 dev eth0
+
+[ ] Testar conectividade:
+
+ping -c 4 192.168.1.254 ping -c 4 8.8.8.8 getent hosts yum.oracle.com
+
+[ ] Configurar /etc/hosts:
+
+127.0.0.1 localhost localhost.localdomain localhost4
+localhost4.localdomain4 192.168.1.131 LAB-ORA01 192.168.1.132 LAB-ORA02
+
+[ ] Validar resolução IPv4:
+
+getent -s files hosts LAB-ORA01 getent ahostsv4 LAB-ORA01
+
+[ ] Validar SSH a partir do Windows:
+
+ssh dba@192.168.1.131
+
+======================================================================
+3. LAB-ORA01 — STORAGE
+======================================================================
+
+[ ] Validar mounts:
+
+df -hT | grep -E ‘/u02|/u03|/u04’
+
+Estrutura: /u02/oradata = DATA /u03/index = INDEX /u04/fra = FRA
+
+[ ] Validar /etc/fstab:
+
+grep -E ‘/u02|/u03|/u04’ /etc/fstab
+
+Entradas utilizadas:
+
+UUID=e3f45ae6-6171-4ffd-b341-9afb037ec31e /u02/oradata xfs defaults 0 0
+UUID=158cfd7f-2788-4975-8a90-609470e7fdda /u04/fra xfs defaults 0 0
+UUID=645420ee-0264-44c4-a861-0a836cdb0e41 /u03/index xfs defaults 0 0
+/swapfile none swap sw 0 0
+
+[ ] Corrigir proprietário/permissões:
+
+chown oracle:oinstall /u02/oradata chown oracle:oinstall /u03/index
+chown oracle:oinstall /u04/fra
+
+chmod 775 /u02/oradata chmod 775 /u03/index chmod 775 /u04/fra
+
+[ ] Testar escrita como oracle:
+
+su - oracle touch /u02/oradata/teste_oracle touch
+/u03/index/teste_oracle touch /u04/fra/teste_oracle
+
+[ ] Remover testes:
+
+rm -f /u02/oradata/teste_oracle rm -f /u03/index/teste_oracle rm -f
+/u04/fra/teste_oracle
+
+======================================================================
+4. LAB-ORA01 — ORACLE HOME E SWAP
+======================================================================
+
+[ ] Validar ambiente:
+
+su - oracle echo $ORACLE_BASE echo $ORACLE_HOME sqlplus -v cat
+/etc/oratab
+
+Esperado: ORACLE_BASE=/u01/app/oracle
+ORACLE_HOME=/u01/app/oracle/product/26ai/dbhome_1 SQL*Plus 23.26.1.0.0
+/etc/oratab sem banco cadastrado.
+
+[ ] Validar swap:
+
+swapon –show free -h
+
+Esperado aproximadamente: LVM swap = 2.8G /swapfile = 5G Total = ~7.8
+GiB
+
+======================================================================
+5. LAB-ORA01 — ORACLE NET
+======================================================================
+
+[ ] Verificar diretório:
+
+echo $ORACLE_HOME ls -la $ORACLE_HOME/network/admin
+
+[ ] Criar listener.ora:
+
+vi $ORACLE_HOME/network/admin/listener.ora
+
+Conteúdo:
+
+LISTENER = (DESCRIPTION_LIST = (DESCRIPTION = (ADDRESS = (PROTOCOL =
+TCP)(HOST = LAB-ORA01)(PORT = 1521)) ) )
+
+[ ] Conferir:
+
+cat $ORACLE_HOME/network/admin/listener.ora
+
+[ ] Iniciar e validar Listener:
+
+lsnrctl start lsnrctl status
+
+Nesta etapa é normal: The listener supports no services
+
+[ ] Criar tnsnames.ora:
+
+vi $ORACLE_HOME/network/admin/tnsnames.ora
+
+Conteúdo:
+
+LAB_ORA01 = (DESCRIPTION = (ADDRESS = (PROTOCOL = TCP)(HOST =
+LAB-ORA01)(PORT = 1521)) )
+
+LAB_ORA02 = (DESCRIPTION = (ADDRESS = (PROTOCOL = TCP)(HOST =
+LAB-ORA02)(PORT = 1521)) )
+
+[ ] Conferir:
+
+cat $ORACLE_HOME/network/admin/tnsnames.ora
+
+[ ] Testar ORA01:
+
+tnsping LAB_ORA01
+
+Obtido: OK (0 msec)
+
+[ ] Testar ORA02 antes da criação:
+
+tnsping LAB_ORA02
+
+Obtido/esperado nesta fase: TNS-12543: TNS:destination host unreachable
+
+[ ] Criar sqlnet.ora:
+
+vi $ORACLE_HOME/network/admin/sqlnet.ora
+
+Conteúdo:
+
+NAMES.DIRECTORY_PATH = (TNSNAMES, EZCONNECT)
+
+[ ] Conferir:
+
+cat $ORACLE_HOME/network/admin/sqlnet.ora
+
+======================================================================
+6. LAB-ORA01 — FIREWALL
+======================================================================
+
+[ ] Verificar portas:
+
+firewall-cmd –list-ports
+
+[ ] Liberar TCP/1521:
+
+firewall-cmd –permanent –add-port=1521/tcp
+
+[ ] Recarregar:
+
+firewall-cmd –reload
+
+[ ] Confirmar:
+
+firewall-cmd –list-ports
+
+Esperado: 1521/tcp
+
+[ ] Validar novamente:
+
+su - oracle lsnrctl status
+
+Confirmar: HOST=LAB-ORA01 PORT=1521
+
+======================================================================
+7. PREPARAR LAB-ORA01 PARA CLONAGEM
+======================================================================
+
+[ ] DBLAB ainda NÃO criado [ ] Oracle Home validado [ ] Storage validado
+[ ] Swap validada [ ] Rede validada [ ] /etc/hosts validado [ ] Oracle
+Net validado [ ] Firewall TCP/1521 validado [ ] Listener validado
+
+Desligar:
+
+exit shutdown -h now
+
+Manter LAB-ORA01 desligado durante a primeira inicialização do clone
+para evitar conflito de hostname/IP.
+
+======================================================================
+8. HYPER-V — CRIAR LAB-ORA02
+======================================================================
+
+[ ] Exportar/clonar LAB-ORA01 [ ] Importar como cópia com novo ID da VM
+[ ] Nomear a VM como LAB-ORA02 [ ] Manter LAB-ORA01 desligado [ ]
+Inicializar somente LAB-ORA02
+
+Inicialmente o clone herda: Hostname = LAB-ORA01 IP = 192.168.1.131
+
+======================================================================
+9. LAB-ORA02 — IDENTIDADE E REDE
+======================================================================
+
+[ ] Alterar hostname:
+
+hostnamectl set-hostname LAB-ORA02
+
+[ ] Validar:
+
+hostname
+
+Esperado: LAB-ORA02
+
+[ ] Alterar rede:
+
+nmcli connection modify eth0
+ipv4.method manual
+ipv4.addresses 192.168.1.132/24
+ipv4.gateway 192.168.1.254
+ipv4.dns “8.8.8.8 1.1.1.1”
+
+[ ] Validar configuração persistente:
+
+nmcli connection show eth0 | grep -E
+‘ipv4.method|ipv4.addresses|ipv4.gateway|ipv4.dns’
+
+Confirmado: ipv4.method = manual ipv4.addresses = 192.168.1.132/24
+ipv4.gateway = 192.168.1.254 ipv4.dns = 8.8.8.8,1.1.1.1
+
+[ ] Validar /etc/hosts:
+
+cat /etc/hosts
+
+Confirmado:
+
+127.0.0.1 localhost localhost.localdomain localhost4
+localhost4.localdomain4 192.168.1.131 LAB-ORA01 192.168.1.132 LAB-ORA02
+
+======================================================================
+10. LAB-ORA02 — ORACLE NET
+======================================================================
+
+[ ] Alterar/validar listener.ora:
+
+cat $ORACLE_HOME/network/admin/listener.ora
+
+Conteúdo confirmado:
+
+LISTENER = (DESCRIPTION_LIST = (DESCRIPTION = (ADDRESS = (PROTOCOL =
+TCP)(HOST = LAB-ORA02)(PORT = 1521)) ) )
+
+[ ] tnsnames.ora permanece igual, contendo:
+
+LAB_ORA01 -> LAB-ORA01:1521 LAB_ORA02 -> LAB-ORA02:1521
+
+[ ] sqlnet.ora permanece:
+
+NAMES.DIRECTORY_PATH = (TNSNAMES, EZCONNECT)
+
+[ ] Firewall TCP/1521 é herdado do LAB-ORA01.
+
+======================================================================
+11. VALIDAÇÕES FINAIS AINDA A REALIZAR APÓS REBOOT DO LAB-ORA02
+======================================================================
+
+[ ] Reiniciar LAB-ORA02:
+
+reboot
+
+[ ] Validar hostname:
+
+hostname
+
+[ ] Validar IP:
+
+ip addr show eth0
+
+[ ] Validar rota:
+
+ip route
+
+Esperado: default via 192.168.1.254 dev eth0
+
+[ ] Testar gateway/internet:
+
+ping -c 4 192.168.1.254 ping -c 4 8.8.8.8
+
+[ ] Validar storage:
+
+df -hT | grep -E ‘/u02|/u03|/u04’
+
+[ ] Validar swap:
+
+swapon –show free -h
+
+[ ] Validar Oracle:
+
+su - oracle echo $ORACLE_BASE echo $ORACLE_HOME sqlplus -v
+
+[ ] Validar Listener:
+
+lsnrctl status
+
+[ ] Validar firewall:
+
+firewall-cmd –list-ports
+
+======================================================================
+12. TESTE FINAL COM OS DOIS HOSTS LIGADOS
+======================================================================
+
+Somente depois de LAB-ORA02 estar definitivamente como: Hostname =
+LAB-ORA02 IP = 192.168.1.132
+
+ligar também LAB-ORA01.
+
+No LAB-ORA01:
+
+ping -c 4 LAB-ORA02 tnsping LAB_ORA02
+
+No LAB-ORA02:
+
+ping -c 4 LAB-ORA01 tnsping LAB_ORA01
+
+Nos dois:
+
+lsnrctl status
+
+======================================================================
+13. RESULTADO ESPERADO
+======================================================================
+
+LAB-ORA01 LAB-ORA02 192.168.1.131 192.168.1.132 Listener TCP/1521
+Listener TCP/1521 Oracle Home 26ai Oracle Home 26ai DBLABPRD futuro
+DBLABSTB futuro PRIMARY futuro STANDBY futuro
+
+DB_NAME futuro = DBLAB
+
+Até este ponto estamos preparando os SERVIDORES e o ORACLE NET. O Data
+Guard ainda não existe de fato porque o DBLAB, o Physical Standby, o
+Broker e o FSFO serão configurados nas próximas etapas.
